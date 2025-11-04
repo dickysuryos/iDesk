@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "author": "Dicky Suryo Saputro",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "esp32-s3-devkitc-1",
+      "id": "esp",
+      "top": -28.98,
+      "left": -129.83,
+      "attrs": {}
+    },
+    { "type": "board-ssd1306", "id": "oled1", "top": 12.74, "left": 48.23, "attrs": {} }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:GND.1", "oled1:GND", "black", [ "h0" ] ],
+    [ "oled1:VCC", "esp:3V3.1", "red", [ "v0" ] ],
+    [ "oled1:SCL", "esp:5", "green", [ "v0" ] ],
+    [ "oled1:SDA", "esp:1", "yellow", [ "v0" ] ]
+  ],
+  "dependencies": {}
+}
