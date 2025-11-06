@@ -66,3 +66,30 @@ Hallo
 💾 Save pairing info in NVS
 
 📶 Add Bluetooth RSSI indicator
+
+## Screenshot
+<table>
+  <tr>
+    <td align="center">
+      <strong>📩 Notification Screen</strong><br>
+      <img src="https://github.com/dickysuryos/iDesk/blob/main/images/image_1.png"
+           alt="OLED Notification"
+           width="240" height="320"><br>
+      <sub>Shows sender & message (e.g., WhatsApp)</sub>
+    </td>
+    <td align="center">
+           <strong>📩 Notification Screen</strong><br>
+      <img src="https://github.com/dickysuryos/iDesk/blob/main/images/image_2.png"
+           alt="OLED Notification"
+           width="240" height="320"><br>
+      <sub>Shows sender & message (e.g., WhatsApp)</sub>
+    </td>
+    <td align="center">
+           <strong>📩 Notification Screen</strong><br>
+      <img src="https://github.com/dickysuryos/iDesk/blob/main/images/image_3.png"
+           alt="OLED Notification"
+           width="240" height="320"><br>
+      <sub>Shows sender & message (e.g., WhatsApp)</sub>
+    </td>
+  </tr>
+</table>
