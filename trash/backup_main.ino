@@ -12,6 +12,8 @@
 #include <time.h>
 #include "sdkconfig.h"
 #include <U8g2lib.h>
+#include <WiFi.h>
+#include <WebServer.h>
 
 static char LOG_TAG[] = "SampleServer";
 
@@ -19,6 +21,64 @@ static char LOG_TAG[] = "SampleServer";
 #define SDA_PIN     8
 #define SCL_PIN     9
 #define RESET_PIN   U8X8_PIN_NONE
+
+WebServer server(80);
+
+const char MAIN_page[] PROGMEM = R"====(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ESP32 Clock</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      color: #0f0;
+      font-family: monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    #time {
+      font-size: 3rem;
+      letter-spacing: 0.2rem;
+    }
+    #dot {
+      animation: blink 1s infinite;
+    }
+    @keyframes blink {
+      0% { opacity: 1; }
+      50% { opacity: 0; }
+      100% { opacity: 1; }
+    }
+    #msg {
+      margin-top: 14px;
+      font-size: 0.9rem;
+      color: #8f8;
+    }
+  </style>
+</head>
+<body>
+  <div id="time">--:--:--</div>
+  <div id="msg">ESP32 local clock</div>
+  <script>
+    function pad(n){ return n < 10 ? "0"+n : n; }
+    function tick() {
+      const now = new Date();
+      const h = pad(now.getHours());
+      const m = pad(now.getMinutes());
+      const s = pad(now.getSeconds());
+      document.getElementById("time").textContent = h + ":" + m + ":" + s;
+    }
+    setInterval(tick, 1000);
+    tick();
+  </script>
+</body>
+</html>
+)====";
 
 U8G2_SSD1306_128X64_NONAME_F_SW_I2C  u8g2_sw_ssd1306(U8G2_R2, /* SCL */ SCL_PIN, /* SDA */ SDA_PIN, RESET_PIN);
 
@@ -46,6 +106,14 @@ String lastSender = "";
 volatile bool needRedrawCategory = false;
 volatile bool needRedrawMessage  = false;
 volatile bool needRedrawSender = false;
+
+// software clock
+unsigned long timeBaseMillis = 0;   // when we last set the time
+unsigned long timeBaseSeconds = 0;  // seconds since midnight when we set it
+
+// timer for switching to clock
+unsigned long lastNotifMillis = 0;
+bool showClockScreen = false;
 
 // ================= SECURITY =================
 class MySecurity : public BLESecurityCallbacks {
@@ -139,6 +207,80 @@ static void dataSourceNotifyCallback(
         // move to next attribute
         index += attrLen;
     }
+     // every time notif comes in, reset timer & go back to notif screen
+    lastNotifMillis = millis();
+    showClockScreen = false;
+}
+
+void handleRoot() {
+  server.send_P(200, "text/html", MAIN_page);
+}
+
+void handleJson() {
+  String json = "{";
+  json += "\"sender\":\"" + lastSender + "\",";
+  json += "\"message\":\"" + lastMessage + "\",";
+  json += "\"uptime\":" + String(millis()/1000);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void drawClockScreen() {
+    // how many seconds have passed since we set time
+    unsigned long elapsedSec = (millis() - timeBaseMillis) / 1000;
+    unsigned long nowSec = timeBaseSeconds + elapsedSec;
+
+    // convert to h:m:s (24h)
+    unsigned int h = (nowSec / 3600) % 24;
+    unsigned int m = (nowSec / 60) % 60;
+    unsigned int s = nowSec % 60;
+
+    char buf[16];
+    sprintf(buf, "%02u:%02u:%02u", h, m, s);
+
+    u8g2_sw_ssd1306.clearBuffer();
+
+    // title
+    
+    u8g2_sw_ssd1306.setFont(u8g2_font_6x10_tr);
+    u8g2_sw_ssd1306.drawStr(0, 10, "PsVita Mampang");
+
+    // time (bigger)
+    u8g2_sw_ssd1306.setFont(u8g2_font_logisoso16_tr);
+    u8g2_sw_ssd1306.drawStr(0, 40, buf);
+
+    // tiny animation
+    int animX = (millis() / 80) % 128;
+    u8g2_sw_ssd1306.setFont(u8g2_font_6x10_tr);
+    u8g2_sw_ssd1306.drawStr(animX, 62, ".");
+
+    u8g2_sw_ssd1306.sendBuffer();
+}
+
+void handleSetTime() {
+  if (!server.hasArg("h") || !server.hasArg("m") || !server.hasArg("s")) {
+    server.send(400, "text/plain", "use /settime?h=HH&m=MM&s=SS");
+    return;
+  }
+
+  int h = server.arg("h").toInt();
+  int m = server.arg("m").toInt();
+  int s = server.arg("s").toInt();
+
+  if (h < 0) h = 0; if (h > 23) h = 23;
+  if (m < 0) m = 0; if (m > 59) m = 59;
+  if (s < 0) s = 0; if (s > 59) s = 59;
+
+  // set software clock
+  timeBaseMillis  = millis();
+  timeBaseSeconds = h * 3600UL + m * 60UL + s;
+
+  // optional: also show immediately on serial
+  char buf[32];
+  sprintf(buf, "Time set to %02d:%02d:%02d", h, m, s);
+  Serial.println(buf);
+
+  server.send(200, "text/plain", buf);
 }
 
 
@@ -383,8 +525,29 @@ void setup()
     u8g2_sw_ssd1306.begin();
     u8g2_sw_ssd1306.clearBuffer();
     u8g2_sw_ssd1306.setFont(u8g2_font_6x10_tr);
-    u8g2_sw_ssd1306.drawStr(0, 12, "ANCS waiting...");
+    u8g2_sw_ssd1306.drawStr(0, 12, "Booting...");
     u8g2_sw_ssd1306.sendBuffer();
+
+     // --- WiFi STA ---
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("notif desktop", "12345678");
+    IPAddress ip = WiFi.softAPIP();
+    Serial.print("AP IP: ");
+    Serial.println("192.168.4.1");
+
+        // show IP on OLED too
+    u8g2_sw_ssd1306.clearBuffer();
+    u8g2_sw_ssd1306.setFont(u8g2_font_6x10_tr);
+    u8g2_sw_ssd1306.drawStr(0, 10, "WiFi OK");
+    u8g2_sw_ssd1306.drawStr(0, 22, WiFi.localIP().toString().c_str());
+    u8g2_sw_ssd1306.drawStr(0, 36, "Open in browser");
+    u8g2_sw_ssd1306.sendBuffer();
+
+    // --- WebServer ---
+    server.on("/", handleRoot);
+    server.on("/json", handleJson);
+    server.on("/settime", handleSetTime);
+    server.begin();
 
     SampleSecureServer();
 }
@@ -410,16 +573,6 @@ void oledDrawWrappedLines(const String &text, uint8_t startY) {
 
 void loop()
 {
-    // draw category (new notification)
-    // if (needRedrawCategory) {
-    //     needRedrawCategory = false;
-    //     u8g2_sw_ssd1306.clearBuffer();
-    //     u8g2_sw_ssd1306.setFont(u8g2_font_6x10_tr);
-    //     u8g2_sw_ssd1306.drawStr(0, 10, "New Notification!");
-    //     u8g2_sw_ssd1306.drawUTF8(0, 26, lastCategory.c_str());
-    //     u8g2_sw_ssd1306.drawStr(0, 42, "Getting details...");
-    //     u8g2_sw_ssd1306.sendBuffer();
-    // }
 
     // draw message text
     if (needRedrawMessage) {
@@ -444,5 +597,20 @@ void loop()
         u8g2_sw_ssd1306.sendBuffer();
     }
 
+
+    // 2) if 20s passed with no new notif -> show clock
+    if (!showClockScreen) {
+        if (millis() - lastNotifMillis >= 50000UL) {  // 20 seconds
+            showClockScreen = true;
+        }
+    }
+
+    // 3) draw clock if enabled
+    if (showClockScreen) {
+        drawClockScreen();
+    }
+
+    // ...
+    server.handleClient();  // <--- add this
     delay(50);
 }

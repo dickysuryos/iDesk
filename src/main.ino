@@ -16,14 +16,18 @@
 #include <WebServer.h>
 
 static char LOG_TAG[] = "SampleServer";
-
+bool isReconnecting = false;
 // ==== OLED PINS ====
 #define SDA_PIN     8
 #define SCL_PIN     9
 #define RESET_PIN   U8X8_PIN_NONE
 
 WebServer server(80);
-
+// Track state & shared objects
+BLEServer*        pServer        = nullptr;
+BLEAdvertising*   pAdvertising   = nullptr;
+volatile bool     gPhoneLinked   = false;  // true when iPhone is connected to our server
+unsigned long     gLastAdvKick   = 0;
 const char MAIN_page[] PROGMEM = R"====(
 <!DOCTYPE html>
 <html>
@@ -114,6 +118,21 @@ unsigned long timeBaseSeconds = 0;  // seconds since midnight when we set it
 // timer for switching to clock
 unsigned long lastNotifMillis = 0;
 bool showClockScreen = false;
+
+
+class MyClientCallbacks : public BLEClientCallbacks {
+  void onConnect(BLEClient* pClient) override {
+    Serial.println("[ANCS Client] connected");
+    isReconnecting = false;
+  }
+  void onDisconnect(BLEClient* pClient) override {
+    Serial.println("[ANCS Client] disconnected");
+    // Let server callbacks drive re-advertising; we only null pointers
+    gCtrlPtChar = gNotifSrcChar = gDataSrcChar = nullptr;
+    isReconnecting = true;
+  }
+};
+
 
 // ================= SECURITY =================
 class MySecurity : public BLESecurityCallbacks {
@@ -283,6 +302,16 @@ void handleSetTime() {
   server.send(200, "text/plain", buf);
 }
 
+void ensureAdvertising()
+{
+  // Kick advertising every 3 seconds if we’re not linked
+  if (!gPhoneLinked && millis() - gLastAdvKick > 3000) {
+    if (pAdvertising) {
+      pAdvertising->start();  // safe to call repeatedly
+    }
+    gLastAdvKick = millis();
+  }
+}
 
 // ================= NOTIFICATION SOURCE CALLBACK =================
 // DON'T draw OLED here
@@ -327,7 +356,7 @@ class MyClient: public Task {
 
         BLEAddress* pAddress = (BLEAddress*)data;
         BLEClient*  pClient  = BLEDevice::createClient();
-
+        pClient->setClientCallbacks(new MyClientCallbacks());
         BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
         BLEDevice::setSecurityCallbacks(new MySecurity());
 
@@ -439,6 +468,7 @@ class MyClient: public Task {
     }
 };
 
+
 // ================= SERVER CALLBACKS =================
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer, esp_ble_gatts_cb_param_t *param) {
@@ -446,7 +476,8 @@ class MyServerCallbacks: public BLEServerCallbacks {
         Serial.println("**Device connected**");
         Serial.println(BLEAddress(param->connect.remote_bda).toString().c_str());
         Serial.println("********************");
-
+        gPhoneLinked = true;
+        isReconnecting = false;
         MyClient* pMyClient = new MyClient();
         pMyClient->setStackSize(18000);
         pMyClient->start(new BLEAddress(param->connect.remote_bda));
@@ -456,7 +487,16 @@ class MyServerCallbacks: public BLEServerCallbacks {
         Serial.println("************************");
         Serial.println("**Device  disconnected**");
         Serial.println("************************");
-        pServer->getAdvertising()->start();
+            // Reset ANCS pointers & flags so our client code doesn’t deref stale pointers
+        gCtrlPtChar = gNotifSrcChar = gDataSrcChar = nullptr;
+        pendingNotification = false;
+        incomingCall = false;
+
+        gPhoneLinked = false;
+        isReconnecting = true;
+        // pServer->getAdvertising()->start();
+         // Re-advertise (ANCS solicitation) — iPhone will reconnect itself
+        if (pAdvertising) pAdvertising->start();
     }
 };
 
@@ -466,12 +506,12 @@ class MainBLEServer: public Task {
         ESP_LOGD(LOG_TAG, "Starting BLE work!");
 
         BLEDevice::init("ANCS");
-        BLEServer* pServer = BLEDevice::createServer();
+        pServer = BLEDevice::createServer();
         pServer->setCallbacks(new MyServerCallbacks());
         BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
         BLEDevice::setSecurityCallbacks(new MySecurity());
 
-        BLEAdvertising *pAdvertising = pServer->getAdvertising();
+        pAdvertising = pServer->getAdvertising();
         BLEAdvertisementData oAdvertisementData = BLEAdvertisementData();
         oAdvertisementData.setFlags(0x01);
         _setServiceSolicitation(&oAdvertisementData, BLEUUID("7905F431-B5CE-4E99-A40F-4B1E122D00D0"));
@@ -605,11 +645,20 @@ void loop()
         }
     }
 
+    if (isReconnecting) {
+    u8g2_sw_ssd1306.clearBuffer();
+    u8g2_sw_ssd1306.setFont(u8g2_font_6x10_tr);
+    u8g2_sw_ssd1306.drawStr(0, 20, "iPhone disconnected");
+    u8g2_sw_ssd1306.drawStr(0, 32, "Reconnecting...");
+    u8g2_sw_ssd1306.sendBuffer();
+    showClockScreen = false;
+    }
+
     // 3) draw clock if enabled
     if (showClockScreen) {
         drawClockScreen();
     }
-
+     ensureAdvertising();     // <-- keeps us discoverable after drops
     // ...
     server.handleClient();  // <--- add this
     delay(50);
