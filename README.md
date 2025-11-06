@@ -35,7 +35,7 @@ This project brings smartwatch-like functionality to your ESP32 board — no Wi-
 #define SDA_PIN     8     // I²C data
 #define SCL_PIN     9     // I²C clock
 #define RESET_PIN   U8X8_PIN_NONE
-
+```
 ---
 
 ## 🪄 Usage
